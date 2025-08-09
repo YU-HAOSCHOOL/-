@@ -17,7 +17,8 @@
         let firebaseApp, db, auth, userId;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_token : null;
+        // 這裡修復了一個變數名稱的錯誤，確保在讀取時使用正確的名稱
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         document.addEventListener('DOMContentLoaded', async function () {
             // 初始化 Firebase
