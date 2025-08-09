@@ -13,21 +13,25 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, collection, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        
+
         let firebaseApp, db, auth, userId;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        // 這裡修復了一個變數名稱的錯誤，確保在讀取時使用正確的名稱
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         document.addEventListener('DOMContentLoaded', async function () {
-            // 初始化 Firebase
+            // 在 DOM 載入後才執行所有初始化邏輯
+            console.log("DOM 載入完成，開始初始化應用程式...");
+
+            // 檢查並初始化 Firebase
             if (Object.keys(firebaseConfig).length > 0) {
                 firebaseApp = initializeApp(firebaseConfig);
                 db = getFirestore(firebaseApp);
                 auth = getAuth(firebaseApp);
+                console.log("Firebase 服務已初始化。");
             } else {
-                console.error("Firebase configuration is missing. Cannot initialize Firestore.");
+                console.error("Firebase 配置缺失。無法初始化 Firestore。");
+                showModal('錯誤', 'Firebase 配置缺失，請檢查設定！');
                 return;
             }
 
@@ -36,22 +40,24 @@
                 if (user) {
                     userId = user.uid;
                     document.getElementById('user-id-display').textContent = `使用者ID: ${userId}`;
-                    // 在使用者登入後才開始載入資料
-                    loadInterviews();
+                    console.log(`使用者已登入，ID: ${userId}`);
+                    await loadInterviews();
                 } else {
                     try {
+                        console.log("使用者未登入，嘗試匿名登入...");
                         if (initialAuthToken) {
                             await signInWithCustomToken(auth, initialAuthToken);
                         } else {
                             await signInAnonymously(auth);
                         }
                     } catch (error) {
-                        console.error("Firebase authentication failed:", error);
+                        console.error("Firebase 認證失敗:", error);
+                        showModal('錯誤', '認證失敗，請檢查網路連線。');
                     }
                 }
             });
 
-            // 初始化評分數據和圖表
+            // 評分數據和圖表
             const evaluationData = {
                 scores: {
                     teachingPassion: 0,
@@ -63,33 +69,13 @@
                     teamwork: 0,
                     potential: 0,
                 },
-                comments: {
-                    teachingPassion: '',
-                    responsibility: '',
-                    communication: '',
-                    affability: '',
-                    proactive: '',
-                    detailOriented: '',
-                    teamwork: '',
-                    potential: '',
-                },
-                applicantName: '',
-                interviewerName: '',
-                interviewDate: '',
-                overallSummary: '',
-                decision: '',
-                suggestedSalary: null,
             };
 
             const chartLabels = {
-                teachingPassion: '教學熱忱',
-                responsibility: '責任心',
-                communication: '溝通能力',
-                affability: '親和力',
-                proactive: '主動積極',
-                detailOriented: '重視細節',
-                teamwork: '團隊合作',
-                potential: '發展潛力',
+                teachingPassion: '教學熱忱', responsibility: '責任心',
+                communication: '溝通能力', affability: '親和力',
+                proactive: '主動積極', detailOriented: '重視細節',
+                teamwork: '團隊合作', potential: '發展潛力',
             };
 
             const ctx = document.getElementById('radarChart').getContext('2d');
@@ -116,8 +102,7 @@
                             angleLines: { color: 'rgba(0, 0, 0, 0.1)' },
                             grid: { color: 'rgba(0, 0, 0, 0.1)' },
                             pointLabels: { font: { size: 14 }, color: '#3D3D3D' },
-                            suggestedMin: 0,
-                            suggestedMax: 5,
+                            suggestedMin: 0, suggestedMax: 5,
                             ticks: { stepSize: 1, backdropColor: 'rgba(255, 255, 255, 0.75)' }
                         }
                     },
@@ -125,24 +110,69 @@
                 }
             });
 
-            // 頁面動態更新功能
             function updateChart() {
                 radarChart.data.datasets[0].data = Object.values(evaluationData.scores);
                 radarChart.update();
             }
 
-            // 儲存面試紀錄到 Firestore
+            // 顯示自訂訊息框
+            function showModal(title, message, isConfirm = false) {
+                const modal = document.getElementById('custom-modal');
+                const modalTitle = document.getElementById('modal-title');
+                const modalMessage = document.getElementById('modal-message');
+                const confirmBtn = document.getElementById('confirm-action-btn');
+                const cancelBtn = document.getElementById('cancel-action-btn');
+
+                modalTitle.textContent = title;
+                modalMessage.textContent = message;
+                modal.classList.remove('hidden');
+
+                if (isConfirm) {
+                    confirmBtn.classList.remove('hidden');
+                    cancelBtn.classList.remove('hidden');
+                    return new Promise((resolve) => {
+                        const confirmHandler = () => {
+                            modal.classList.add('hidden');
+                            confirmBtn.removeEventListener('click', confirmHandler);
+                            cancelBtn.removeEventListener('click', cancelHandler);
+                            resolve(true);
+                        };
+                        const cancelHandler = () => {
+                            modal.classList.add('hidden');
+                            confirmBtn.removeEventListener('click', confirmHandler);
+                            cancelBtn.removeEventListener('click', cancelHandler);
+                            resolve(false);
+                        };
+                        confirmBtn.addEventListener('click', confirmHandler);
+                        cancelBtn.addEventListener('click', cancelHandler);
+                    });
+                } else {
+                    confirmBtn.classList.add('hidden');
+                    cancelBtn.classList.add('hidden');
+                    return new Promise((resolve) => {
+                        const closeHandler = () => {
+                            modal.classList.add('hidden');
+                            modal.querySelector('#modal-close-btn').removeEventListener('click', closeHandler);
+                            modal.querySelector('#modal-ok-btn').removeEventListener('click', closeHandler);
+                            resolve(true);
+                        };
+                        modal.querySelector('#modal-close-btn').addEventListener('click', closeHandler);
+                        modal.querySelector('#modal-ok-btn').addEventListener('click', closeHandler);
+                    });
+                }
+            }
+
             async function saveInterviewData() {
                 if (!userId) {
-                    console.error("User not authenticated.");
+                    showModal('錯誤', '使用者未登入。');
                     return;
                 }
                 const name = document.getElementById('applicantName').value;
                 if (!name) {
-                    alert('請先填寫應徵者姓名才能儲存。');
+                    showModal('提示', '請先填寫應徵者姓名才能儲存。');
                     return;
                 }
-                
+
                 const interviewRecord = {
                     applicantName: name,
                     interviewerName: document.getElementById('interviewerName').value,
@@ -155,7 +185,6 @@
                     timestamp: serverTimestamp(),
                 };
 
-                // 收集所有評分和評論
                 document.querySelectorAll('.evaluation-item').forEach(item => {
                     const id = item.dataset.id;
                     const scoreBtn = item.querySelector('.rating-btn.selected');
@@ -167,14 +196,13 @@
                 const interviewRef = doc(db, `artifacts/${appId}/users/${userId}/interview_records`, name);
                 try {
                     await setDoc(interviewRef, interviewRecord);
-                    alert('面試紀錄已成功儲存！');
+                    showModal('成功', '面試紀錄已成功儲存！');
                 } catch (e) {
                     console.error("Error adding document: ", e);
-                    alert('儲存失敗，請檢查網路或重新嘗試。');
+                    showModal('錯誤', '儲存失敗，請檢查網路或重新嘗試。');
                 }
             }
 
-            // 載入單一紀錄
             function loadRecord(record) {
                 document.getElementById('applicantName').value = record.applicantName || '';
                 document.getElementById('interviewerName').value = record.interviewerName || '';
@@ -203,9 +231,9 @@
                 updateChart();
             }
 
-            // 監聽並載入面試紀錄清單
             function loadInterviews() {
                 const interviewsList = document.getElementById('interviews-list');
+                if (!userId) return; // 確保有使用者 ID 才執行
                 const interviewCollection = collection(db, `artifacts/${appId}/users/${userId}/interview_records`);
                 
                 onSnapshot(interviewCollection, (snapshot) => {
@@ -225,59 +253,72 @@
                 });
             }
 
-            // 評分按鈕事件監聽
-            document.querySelectorAll('.evaluation-item').forEach(item => {
-                const id = item.dataset.id;
-                item.querySelectorAll('.rating-btn').forEach(btn => {
+            function resetForm() {
+                document.getElementById('app').reset();
+                Object.keys(evaluationData.scores).forEach(key => evaluationData.scores[key] = 0);
+                document.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+                updateChart();
+                document.getElementById('interviewDate').valueAsDate = new Date();
+                // 切換回第一個分頁
+                document.getElementById('tab-btn-1').click();
+            }
+
+            // 集中管理所有事件監聽器
+            function setupEventListeners() {
+                // 評分按鈕事件監聽
+                document.querySelectorAll('.evaluation-item').forEach(item => {
+                    const id = item.dataset.id;
+                    item.querySelectorAll('.rating-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            console.log(`Rating button for ${id} clicked with value: ${btn.dataset.value}`); // 增加日誌
+                            const value = parseInt(btn.dataset.value);
+                            evaluationData.scores[id] = value;
+                            item.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+                            btn.classList.add('selected');
+                            updateChart();
+                        });
+                    });
+                });
+
+                // 標籤頁切換事件監聽
+                const tabBtns = document.querySelectorAll('.tab-btn');
+                const tabContents = document.querySelectorAll('.tab-content');
+                tabBtns.forEach(btn => {
                     btn.addEventListener('click', () => {
-                        const value = parseInt(btn.dataset.value);
-                        evaluationData.scores[id] = value;
-                        item.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
-                        btn.classList.add('selected');
-                        updateChart();
+                        console.log(`Tab button clicked: ${btn.id}`); // 增加日誌
+                        tabBtns.forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        const targetId = btn.id.replace('btn', 'content');
+                        tabContents.forEach(content => {
+                            if (content.id === targetId) {
+                                content.classList.remove('hidden');
+                            } else {
+                                content.classList.add('hidden');
+                            }
+                        });
                     });
                 });
-            });
 
-            // 標籤頁切換事件監聽
-            const tabBtns = document.querySelectorAll('.tab-btn');
-            const tabContents = document.querySelectorAll('.tab-content');
-            tabBtns.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    tabBtns.forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    const targetId = btn.id.replace('btn', 'content');
-                    tabContents.forEach(content => {
-                        if (content.id === targetId) {
-                            content.classList.remove('hidden');
-                        } else {
-                            content.classList.add('hidden');
-                        }
-                    });
+                // 主要功能按鈕事件處理
+                document.getElementById('saveBtn').addEventListener('click', saveInterviewData);
+                document.getElementById('printBtn').addEventListener('click', () => window.print());
+                document.getElementById('newBtn').addEventListener('click', async () => {
+                    const confirmed = await showModal('確認', '您確定要開始填寫新的面試紀錄嗎？', true);
+                    if (confirmed) {
+                        resetForm();
+                    }
                 });
-            });
 
-            // 按鈕事件處理
-            document.getElementById('saveBtn').addEventListener('click', saveInterviewData);
-            document.getElementById('printBtn').addEventListener('click', () => window.print());
-            document.getElementById('newBtn').addEventListener('click', () => {
-                if (confirm('您確定要開始填寫新的面試紀錄嗎？')) {
-                    document.getElementById('app').reset();
-                    Object.keys(evaluationData.scores).forEach(key => evaluationData.scores[key] = 0);
-                    document.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
-                    updateChart();
-                    document.getElementById('interviewDate').valueAsDate = new Date();
-                }
-            });
+                // 關閉 Modal 按鈕
+                document.getElementById('modal-close-btn').addEventListener('click', () => document.getElementById('custom-modal').classList.add('hidden'));
+                document.getElementById('modal-ok-btn').addEventListener('click', () => document.getElementById('custom-modal').classList.add('hidden'));
+            }
 
-            // 預設設定
+            // 應用程式初始化
+            setupEventListeners();
             document.getElementById('interviewDate').valueAsDate = new Date();
         });
     </script>
-    <!-- Chosen Palette: Calm Harmony (Beige, Soft Neutrals, Muted Accent) -->
-    <!-- Application Structure Plan: A single-page, top-down interactive form. Key sections (Applicant Info, Thematic Evaluation, Summary) are presented sequentially. The evaluation section uses a tabbed interface to group criteria, combining reference questions with interactive rating components (clickable scores, comment boxes) for a streamlined workflow. A dynamic radar chart in the summary provides instant visual feedback on the candidate's profile. This structure was chosen to digitize the paper form efficiently, improve usability by linking questions directly to scoring, and enhance data synthesis through live visualization, making the evaluation process faster and more insightful for the interviewer. -->
-    <!-- Visualization & Content Choices: Report Info: Candidate evaluation criteria (8 dimensions). Goal: Synthesize & Compare. Viz/Method: Radar Chart (Chart.js/Canvas). Interaction: The chart dynamically updates in real-time as the interviewer clicks the 1-5 score for each criterion. Justification: A radar chart is ideal for visualizing multivariate data for a single subject, offering an immediate, holistic profile of the candidate's strengths and weaknesses across all required traits. This is far more intuitive than scanning a table of numbers. Report Info: Interview questions & criteria. Goal: Inform & Organize. Viz/Method: Tabbed layout with styled HTML lists and interactive rating components. Interaction: Interviewers click tabs to switch between criteria groups. They click rating numbers to select a score. Justification: This combines reference material (questions) with the action (scoring) in a single, uncluttered view, improving workflow efficiency over a separate question sheet and scoring table. -->
-    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
     <style>
         body {
             font-family: 'Noto Sans TC', sans-serif;
@@ -333,6 +374,19 @@
             .page-break {
                 page-break-before: always;
             }
+        }
+        /* 自訂 Modal 樣式 */
+        .modal-bg {
+            background-color: rgba(0, 0, 0, 0.5);
+            transition: opacity 0.3s ease;
+        }
+        .modal-container {
+            transform: translate(-50%, -50%);
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translate(-50%, -60%); }
+            to { opacity: 1; transform: translate(-50%, -50%); }
         }
     </style>
 </head>
@@ -564,6 +618,23 @@
                 </button>
             </footer>
         </main>
+    </div>
+    <!-- 自訂 Modal UI -->
+    <div id="custom-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-bg">
+        <div class="modal-container bg-white rounded-lg shadow-xl p-6 w-96 relative">
+            <h3 id="modal-title" class="text-xl font-bold mb-4">標題</h3>
+            <p id="modal-message" class="text-gray-700 mb-6">訊息內容</p>
+            <div class="flex justify-end space-x-3">
+                <button id="cancel-action-btn" class="hidden bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded">取消</button>
+                <button id="confirm-action-btn" class="hidden bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded">確認</button>
+                <button id="modal-ok-btn" class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded">確定</button>
+            </div>
+            <button id="modal-close-btn" class="absolute top-2 right-2 text-gray-400 hover:text-gray-600">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
     </div>
 </body>
 </html>
