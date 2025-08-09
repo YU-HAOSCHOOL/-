@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>育豪資優導師面試評鑑系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, collection, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        let firebaseApp, db, auth, userId;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_token : null;
+
+        document.addEventListener('DOMContentLoaded', async function () {
+            // 初始化 Firebase
+            if (Object.keys(firebaseConfig).length > 0) {
+                firebaseApp = initializeApp(firebaseConfig);
+                db = getFirestore(firebaseApp);
+                auth = getAuth(firebaseApp);
+            } else {
+                console.error("Firebase configuration is missing. Cannot initialize Firestore.");
+                return;
+            }
+
+            // 處理使用者認證
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+                    document.getElementById('user-id-display').textContent = `使用者ID: ${userId}`;
+                    // 在使用者登入後才開始載入資料
+                    loadInterviews();
+                } else {
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Firebase authentication failed:", error);
+                    }
+                }
+            });
+
+            // 初始化評分數據和圖表
+            const evaluationData = {
+                scores: {
+                    teachingPassion: 0,
+                    responsibility: 0,
+                    communication: 0,
+                    affability: 0,
+                    proactive: 0,
+                    detailOriented: 0,
+                    teamwork: 0,
+                    potential: 0,
+                },
+                comments: {
+                    teachingPassion: '',
+                    responsibility: '',
+                    communication: '',
+                    affability: '',
+                    proactive: '',
+                    detailOriented: '',
+                    teamwork: '',
+                    potential: '',
+                },
+                applicantName: '',
+                interviewerName: '',
+                interviewDate: '',
+                overallSummary: '',
+                decision: '',
+                suggestedSalary: null,
+            };
+
+            const chartLabels = {
+                teachingPassion: '教學熱忱',
+                responsibility: '責任心',
+                communication: '溝通能力',
+                affability: '親和力',
+                proactive: '主動積極',
+                detailOriented: '重視細節',
+                teamwork: '團隊合作',
+                potential: '發展潛力',
+            };
+
+            const ctx = document.getElementById('radarChart').getContext('2d');
+            const radarChart = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: Object.values(chartLabels),
+                    datasets: [{
+                        label: '應徵者能力',
+                        data: Object.values(evaluationData.scores),
+                        backgroundColor: 'rgba(13, 148, 136, 0.2)',
+                        borderColor: 'rgba(13, 148, 136, 1)',
+                        borderWidth: 2,
+                        pointBackgroundColor: 'rgba(13, 148, 136, 1)',
+                        pointBorderColor: '#fff',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: 'rgba(13, 148, 136, 1)'
+                    }]
+                },
+                options: {
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            angleLines: { color: 'rgba(0, 0, 0, 0.1)' },
+                            grid: { color: 'rgba(0, 0, 0, 0.1)' },
+                            pointLabels: { font: { size: 14 }, color: '#3D3D3D' },
+                            suggestedMin: 0,
+                            suggestedMax: 5,
+                            ticks: { stepSize: 1, backdropColor: 'rgba(255, 255, 255, 0.75)' }
+                        }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            // 頁面動態更新功能
+            function updateChart() {
+                radarChart.data.datasets[0].data = Object.values(evaluationData.scores);
+                radarChart.update();
+            }
+
+            // 儲存面試紀錄到 Firestore
+            async function saveInterviewData() {
+                if (!userId) {
+                    console.error("User not authenticated.");
+                    return;
+                }
+                const name = document.getElementById('applicantName').value;
+                if (!name) {
+                    alert('請先填寫應徵者姓名才能儲存。');
+                    return;
+                }
+                
+                const interviewRecord = {
+                    applicantName: name,
+                    interviewerName: document.getElementById('interviewerName').value,
+                    interviewDate: document.getElementById('interviewDate').value,
+                    overallSummary: document.getElementById('overallSummary').value,
+                    decision: document.querySelector('input[name="decision"]:checked')?.value,
+                    suggestedSalary: document.getElementById('suggestedSalary').value ? parseInt(document.getElementById('suggestedSalary').value) : null,
+                    scores: {},
+                    comments: {},
+                    timestamp: serverTimestamp(),
+                };
+
+                // 收集所有評分和評論
+                document.querySelectorAll('.evaluation-item').forEach(item => {
+                    const id = item.dataset.id;
+                    const scoreBtn = item.querySelector('.rating-btn.selected');
+                    const comment = item.querySelector('textarea').value;
+                    interviewRecord.scores[id] = scoreBtn ? parseInt(scoreBtn.dataset.value) : 0;
+                    interviewRecord.comments[id] = comment;
+                });
+
+                const interviewRef = doc(db, `artifacts/${appId}/users/${userId}/interview_records`, name);
+                try {
+                    await setDoc(interviewRef, interviewRecord);
+                    alert('面試紀錄已成功儲存！');
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                    alert('儲存失敗，請檢查網路或重新嘗試。');
+                }
+            }
+
+            // 載入單一紀錄
+            function loadRecord(record) {
+                document.getElementById('applicantName').value = record.applicantName || '';
+                document.getElementById('interviewerName').value = record.interviewerName || '';
+                document.getElementById('interviewDate').value = record.interviewDate || '';
+                document.getElementById('overallSummary').value = record.overallSummary || '';
+                document.getElementById('suggestedSalary').value = record.suggestedSalary || '';
+
+                if (record.decision) {
+                    const decisionRadio = document.querySelector(`input[name="decision"][value="${record.decision}"]`);
+                    if (decisionRadio) decisionRadio.checked = true;
+                } else {
+                    document.querySelectorAll('input[name="decision"]').forEach(r => r.checked = false);
+                }
+
+                document.querySelectorAll('.evaluation-item').forEach(item => {
+                    const id = item.dataset.id;
+                    item.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+                    const score = record.scores?.[id];
+                    if (score > 0) {
+                        const btn = item.querySelector(`.rating-btn[data-value="${score}"]`);
+                        if (btn) btn.classList.add('selected');
+                    }
+                    item.querySelector('textarea').value = record.comments?.[id] || '';
+                    evaluationData.scores[id] = score || 0;
+                });
+                updateChart();
+            }
+
+            // 監聽並載入面試紀錄清單
+            function loadInterviews() {
+                const interviewsList = document.getElementById('interviews-list');
+                const interviewCollection = collection(db, `artifacts/${appId}/users/${userId}/interview_records`);
+                
+                onSnapshot(interviewCollection, (snapshot) => {
+                    interviewsList.innerHTML = '';
+                    snapshot.forEach((doc) => {
+                        const data = doc.data();
+                        const recordItem = document.createElement('li');
+                        recordItem.className = 'p-2 cursor-pointer hover:bg-teal-50 rounded-md';
+                        recordItem.textContent = `${data.applicantName} - ${data.interviewDate}`;
+                        recordItem.addEventListener('click', () => {
+                            loadRecord(data);
+                        });
+                        interviewsList.appendChild(recordItem);
+                    });
+                }, (error) => {
+                    console.error("Error fetching documents: ", error);
+                });
+            }
+
+            // 評分按鈕事件監聽
+            document.querySelectorAll('.evaluation-item').forEach(item => {
+                const id = item.dataset.id;
+                item.querySelectorAll('.rating-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const value = parseInt(btn.dataset.value);
+                        evaluationData.scores[id] = value;
+                        item.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+                        btn.classList.add('selected');
+                        updateChart();
+                    });
+                });
+            });
+
+            // 標籤頁切換事件監聽
+            const tabBtns = document.querySelectorAll('.tab-btn');
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    tabBtns.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const targetId = btn.id.replace('btn', 'content');
+                    tabContents.forEach(content => {
+                        if (content.id === targetId) {
+                            content.classList.remove('hidden');
+                        } else {
+                            content.classList.add('hidden');
+                        }
+                    });
+                });
+            });
+
+            // 按鈕事件處理
+            document.getElementById('saveBtn').addEventListener('click', saveInterviewData);
+            document.getElementById('printBtn').addEventListener('click', () => window.print());
+            document.getElementById('newBtn').addEventListener('click', () => {
+                if (confirm('您確定要開始填寫新的面試紀錄嗎？')) {
+                    document.getElementById('app').reset();
+                    Object.keys(evaluationData.scores).forEach(key => evaluationData.scores[key] = 0);
+                    document.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+                    updateChart();
+                    document.getElementById('interviewDate').valueAsDate = new Date();
+                }
+            });
+
+            // 預設設定
+            document.getElementById('interviewDate').valueAsDate = new Date();
+        });
+    </script>
+    <!-- Chosen Palette: Calm Harmony (Beige, Soft Neutrals, Muted Accent) -->
+    <!-- Application Structure Plan: A single-page, top-down interactive form. Key sections (Applicant Info, Thematic Evaluation, Summary) are presented sequentially. The evaluation section uses a tabbed interface to group criteria, combining reference questions with interactive rating components (clickable scores, comment boxes) for a streamlined workflow. A dynamic radar chart in the summary provides instant visual feedback on the candidate's profile. This structure was chosen to digitize the paper form efficiently, improve usability by linking questions directly to scoring, and enhance data synthesis through live visualization, making the evaluation process faster and more insightful for the interviewer. -->
+    <!-- Visualization & Content Choices: Report Info: Candidate evaluation criteria (8 dimensions). Goal: Synthesize & Compare. Viz/Method: Radar Chart (Chart.js/Canvas). Interaction: The chart dynamically updates in real-time as the interviewer clicks the 1-5 score for each criterion. Justification: A radar chart is ideal for visualizing multivariate data for a single subject, offering an immediate, holistic profile of the candidate's strengths and weaknesses across all required traits. This is far more intuitive than scanning a table of numbers. Report Info: Interview questions & criteria. Goal: Inform & Organize. Viz/Method: Tabbed layout with styled HTML lists and interactive rating components. Interaction: Interviewers click tabs to switch between criteria groups. They click rating numbers to select a score. Justification: This combines reference material (questions) with the action (scoring) in a single, uncluttered view, improving workflow efficiency over a separate question sheet and scoring table. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #F8F7F4;
+            color: #3D3D3D;
+        }
+        .main-container {
+            background-color: #FFFFFF;
+            border: 1px solid #EAE7E1;
+        }
+        .tab-btn {
+            transition: all 0.3s ease;
+            border-bottom: 3px solid transparent;
+        }
+        .tab-btn.active {
+            color: #0D9488;
+            border-bottom-color: #0D9488;
+        }
+        .rating-btn {
+            transition: all 0.2s ease;
+            border: 1px solid #D1D5DB;
+        }
+        .rating-btn.selected {
+            background-color: #0D9488;
+            color: white;
+            border-color: #0D9488;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 350px;
+            max-height: 400px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 400px;
+            }
+        }
+        @media print {
+            body {
+                background-color: white;
+            }
+            .no-print {
+                display: none;
+            }
+            .main-container {
+                box-shadow: none;
+                border: none;
+            }
+            .page-break {
+                page-break-before: always;
+            }
+        }
+    </style>
+</head>
+<body class="antialiased">
+    <div class="container mx-auto p-4 md:p-8 max-w-6xl">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-teal-700">育豪資優導師面試評鑑系統</h1>
+            <p class="text-gray-500 mt-2">一份專為尋找明星導師設計的互動式評鑑工具</p>
+        </header>
+        <main id="app" class="main-container rounded-lg shadow-lg p-6 md:p-8 space-y-8">
+            <section id="interview-list-section" class="no-print">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-bold border-b-2 border-teal-600 pb-2 flex-grow">過往面試紀錄</h2>
+                    <span id="user-id-display" class="text-sm text-gray-500"></span>
+                </div>
+                <ul id="interviews-list" class="bg-gray-50 border border-gray-200 p-4 rounded-md h-40 overflow-y-auto space-y-2">
+                    <li class="text-gray-500 italic">載入中...</li>
+                </ul>
+            </section>
+            
+            <section id="applicant-details">
+                <h2 class="text-2xl font-bold border-b-2 border-teal-600 pb-2 mb-4">應徵者資料</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                        <label for="applicantName" class="block text-sm font-medium text-gray-700">姓名</label>
+                        <input type="text" id="applicantName" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm">
+                    </div>
+                    <div>
+                        <label for="interviewDate" class="block text-sm font-medium text-gray-700">面試日期</label>
+                        <input type="date" id="interviewDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm">
+                    </div>
+                    <div>
+                        <label for="interviewerName" class="block text-sm font-medium text-gray-700">面試官姓名</label>
+                        <input type="text" id="interviewerName" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm">
+                    </div>
+                </div>
+            </section>
+            <section id="evaluation-section">
+                <h2 class="text-2xl font-bold border-b-2 border-teal-600 pb-2 mb-4">核心能力評鑑</h2>
+                <div class="no-print">
+                    <div class="border-b border-gray-200">
+                        <nav class="-mb-px flex space-x-6" aria-label="Tabs">
+                            <button id="tab-btn-1" class="tab-btn active whitespace-nowrap py-4 px-1 font-medium text-lg">教學熱忱與責任心</button>
+                            <button id="tab-btn-2" class="tab-btn whitespace-nowrap py-4 px-1 font-medium text-lg">溝通與應變能力</button>
+                            <button id="tab-btn-3" class="tab-btn whitespace-nowrap py-4 px-1 font-medium text-lg">個人特質與團隊合作</button>
+                        </nav>
+                    </div>
+                </div>
+                <div id="tab-content-1" class="tab-content mt-6 space-y-6">
+                    <div class="bg-teal-50 border-l-4 border-teal-500 p-4 rounded-r-lg">
+                        <h3 class="font-bold text-teal-800">建議詢問問題</h3>
+                        <ul class="list-disc list-inside mt-2 text-sm text-gray-700 space-y-1">
+                            <li>您對本工作的職務內容有什麼看法？為什麼會想應徵這份工作？</li>
+                            <li>描述您過去在教學或帶班中最有成就感的一次經驗。當學生遇到學習瓶頸時，您會如何處理？</li>
+                            <li>本職缺需長期穩定、專注教學，您對工作穩定度與職涯規劃的看法是什麼？</li>
+                        </ul>
+                    </div>
+                    <div class="evaluation-item" data-id="teachingPassion">
+                        <h4 class="font-semibold text-lg">教學熱忱</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                            <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                     <div class="evaluation-item" data-id="responsibility">
+                        <h4 class="font-semibold text-lg">責任心</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                            <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                </div>
+                <div id="tab-content-2" class="tab-content mt-6 space-y-6 hidden">
+                    <div class="bg-teal-50 border-l-4 border-teal-500 p-4 rounded-r-lg">
+                        <h3 class="font-bold text-teal-800">建議詢問問題</h3>
+                        <ul class="list-disc list-inside mt-2 text-sm text-gray-700 space-y-1">
+                            <li>育豪非常重視與家長的合作。當家長對學生的學習進度有疑慮時，您會如何溝通？</li>
+                            <li>除了教學，這份工作也包含協助行政事務與維持環境整潔。您如何看待這些「非教學」的工作內容？</li>
+                            <li>您會如何與不同性格、學習進度的學生建立良好的關係，並讓他們在課堂中保持專注？</li>
+                        </ul>
+                    </div>
+                     <div class="evaluation-item" data-id="communication">
+                        <h4 class="font-semibold text-lg">溝通能力</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                            <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                     <div class="evaluation-item" data-id="affability">
+                        <h4 class="font-semibold text-lg">親和力</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                            <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                </div>
+                <div id="tab-content-3" class="tab-content mt-6 space-y-6 hidden">
+                    <div class="bg-teal-50 border-l-4 border-teal-500 p-4 rounded-r-lg">
+                        <h3 class="font-bold text-teal-800">建議詢問問題</h3>
+                        <ul class="list-disc list-inside mt-2 text-sm text-gray-700 space-y-1">
+                            <li>請分享一個您過去展現「主動積極」或「重視細節」的例子。</li>
+                            <li>育豪的團隊關係緊密且注重細節，您認為自己會如何融入團隊，並與同事互相支援？</li>
+                            <li>對於「樂於學習，成長意願高」這個特質，您認為自己有哪些特點能符合這項要求？</li>
+                        </ul>
+                    </div>
+                    <div class="evaluation-item" data-id="proactive">
+                        <h4 class="font-semibold text-lg">主動積極</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                           <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                    <div class="evaluation-item" data-id="detailOriented">
+                        <h4 class="font-semibold text-lg">重視細節</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                           <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                    <div class="evaluation-item" data-id="teamwork">
+                        <h4 class="font-semibold text-lg">團隊合作</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                           <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                    <div class="evaluation-item" data-id="potential">
+                        <h4 class="font-semibold text-lg">未來發展潛力</h4>
+                        <div class="flex items-center space-x-2 mt-2">
+                           <span class="text-sm text-gray-600">評分 (1-5):</span>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="1">1</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="2">2</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="3">3</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="4">4</button>
+                            <button class="rating-btn w-8 h-8 rounded-full" data-value="5">5</button>
+                        </div>
+                        <textarea class="mt-2 w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" rows="2" placeholder="請簡述評語..."></textarea>
+                    </div>
+                </div>
+            </section>
+            <div class="page-break"></div>
+            <section id="summary-section">
+                <h2 class="text-2xl font-bold border-b-2 border-teal-600 pb-2 mb-4">綜合評估與建議</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+                    <div>
+                        <h3 class="font-semibold text-lg mb-2">應徵者能力雷達圖</h3>
+                        <div class="chart-container">
+                            <canvas id="radarChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="space-y-6">
+                        <div>
+                            <label for="overallSummary" class="block text-lg font-semibold text-gray-700">面試官綜合評語</label>
+                            <textarea id="overallSummary" rows="5" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm" placeholder="請在此處填寫總結評語..."></textarea>
+                        </div>
+                        <div>
+                            <h4 class="text-lg font-semibold text-gray-700">是否錄取</h4>
+                            <div class="mt-2 flex space-x-6">
+                                <label class="flex items-center">
+                                    <input type="radio" name="decision" value="accept" class="focus:ring-teal-500 h-4 w-4 text-teal-600 border-gray-300">
+                                    <span class="ml-2 text-gray-700">錄取</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="radio" name="decision" value="reject" class="focus:ring-teal-500 h-4 w-4 text-teal-600 border-gray-300">
+                                    <span class="ml-2 text-gray-700">不錄取</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="radio" name="decision" value="pending" class="focus:ring-teal-500 h-4 w-4 text-teal-600 border-gray-300">
+                                    <span class="ml-2 text-gray-700">待定</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="suggestedSalary" class="block text-lg font-semibold text-gray-700">建議薪資</label>
+                            <div class="mt-1 relative rounded-md shadow-sm">
+                                <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                                    <span class="text-gray-500 sm:text-sm">NT$</span>
+                                </div>
+                                <input type="number" id="suggestedSalary" class="block w-full rounded-md border-gray-300 pl-10 focus:border-teal-500 focus:ring-teal-500 sm:text-sm" placeholder="45000">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <footer class="text-center pt-6 border-t border-gray-200 no-print">
+                <button id="saveBtn" class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-6 rounded-lg shadow-md transition-transform transform hover:scale-105">
+                    儲存紀錄
+                </button>
+                <button id="newBtn" class="ml-4 bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded-lg shadow-md transition-transform transform hover:scale-105">
+                    填寫新紀錄
+                </button>
+                <button id="printBtn" class="ml-4 bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-6 rounded-lg shadow-md transition-transform transform hover:scale-105">
+                    列印評鑑表
+                </button>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
